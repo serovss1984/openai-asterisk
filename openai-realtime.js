@@ -4,12 +4,12 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const axios = require('axios');
 
-const ARI_URL = 'http://109.120.159.109:8088';
-const ARI_USER = 'nodejs';
-const ARI_PASS = 'secret';
+const ARI_URL = process.env.ARI_URL;
+const ARI_USER = process.env.ARI_USER;
+const ARI_PASS = process.env.ARI_PASS;
 
 // 🔑 Твой OpenAI API ключ
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'sk-ВСТАВЬ_СЮДА';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_REALTIME_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17';
 
 const LOCAL_IP = '0.0.0.0'; // слушаем все интерфейсы
@@ -39,7 +39,7 @@ ari.connect(ARI_URL, ARI_USER, ARI_PASS, async (err, client) => {
   if (err) throw err;
 
   client.on('StasisStart', async (event, channel) => {
-    console.log(`📞 Вызов от ${channel.caller.number}`);
+//    console.log(`📞 Вызов от ${channel.caller.number}`);
     await channel.answer();
 
     // создаём externalMedia, направляем UDP на этот сервер
@@ -50,6 +50,7 @@ ari.connect(ARI_URL, ARI_USER, ARI_PASS, async (err, client) => {
     });
 
     console.log('Проверка доступных модулей ARI:', Object.keys(client));
+
     const bridge = await client.Bridges.create({ type: 'mixing' });
     await bridge.addChannel({ channel: [channel.id, external.id] });
 
