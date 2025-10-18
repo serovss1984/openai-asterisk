@@ -1,100 +1,88 @@
-const ari = require('ari-client');
-const WebSocket = require('ws');
-const fs = require('fs');
-const { spawn } = require('child_process');
-const axios = require('axios');
+import AriClient from 'ari-client';
+import WebSocket from 'ws';
+import fs from 'fs';
+import { spawn } from 'child_process';
+import axios from 'axios';
+import dotenv from 'dotenv';
+dotenv.config();
 
 const ARI_URL = process.env.ARI_URL;
 const ARI_USER = process.env.ARI_USER;
 const ARI_PASS = process.env.ARI_PASS;
-
-// 🔑 Твой OpenAI API ключ
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_REALTIME_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17';
+const OPENAI_REALTIME_URL = process.env.OPENAI_REALTIME_URL;
+const STASIS_APP = 'openai-app';
 
-const LOCAL_IP = '0.0.0.0'; // слушаем все интерфейсы
-const LOCAL_PORT = 9000;
+AriClient.connect(ARI_URL, ARI_USER, ARI_PASS, async (err, ari) => {
+  if (err) {
+    console.error('❌ Ошибка подключения к ARI:', err);
+    return;
+  }
 
-// 🗣️ Синтез речи через OpenAI
-async function synthesizeText(text) {
-  const filePath = `/tmp/tts_${Date.now()}.mp3`;
-  const resp = await axios.post(
-    'https://api.openai.com/v1/audio/speech',
-    {
-      model: 'gpt-4o-mini-tts',
-      voice: 'alloy',
-      input: text,
-    },
-    {
-      headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
-      responseType: 'arraybuffer',
-    }
-  );
-  fs.writeFileSync(filePath, resp.data);
-  return filePath;
-}
+  console.log('✅ Подключено к Asterisk ARI');
 
-// подключение к ARI
-ari.connect(ARI_URL, ARI_USER, ARI_PASS, async (err, client) => {
-  if (err) throw err;
+  ari.on('StasisStart', async (event, channel) => {
+    const caller = channel.caller.number || 'неизвестно';
+    console.log(`📞 Новый вызов от ${caller}`);
 
-  client.on('StasisStart', async (event, channel) => {
-//    console.log(`📞 Вызов от ${channel.caller.number}`);
-    await channel.answer();
+    try {
+      await channel.answer();
+      console.log('☎️ Канал отвечен');
 
-    // создаём externalMedia, направляем UDP на этот сервер
-    const external = await client.channels.externalMedia({
-      app: 'openai-app',
-      external_host: `${LOCAL_IP}:${LOCAL_PORT}`,
-      format: 'slin16'
-    });
+      // создаём мост
+      const bridge = await ari.bridges.create({ type: 'mixing' });
+      console.log('🔗 Создан bridge:', bridge.id);
+      await bridge.addChannel({ channel: channel.id });
 
-    console.log('Проверка доступных модулей ARI:', Object.keys(client));
+      // подключение к OpenAI realtime
+      const ws = new WebSocket(OPENAI_REALTIME_URL, {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          'OpenAI-Beta': 'realtime=v1',
+        },
+      });
 
-    const bridge = await client.Bridges.create({ type: 'mixing' });
-    await bridge.addChannel({ channel: [channel.id, external.id] });
+      ws.on('open', async () => {
+        console.log('🧠 Подключено к OpenAI Realtime API');
+        ws.send(
+          JSON.stringify({
+            type: 'response.create',
+            response: {
+              modalities: ['text'],
+              instructions: 'Скажи коротко приветствие: соединение установлено.',
+            },
+          })
+        );
+        await channel.play({ media: 'sound:demo-congrats' });
+      });
 
-    // ffmpeg — слушает UDP и выводит PCM в stdout
-    const ffmpeg = spawn('ffmpeg', [
-      '-f', 's16le', '-ar', '16000', '-ac', '1',
-      `-i`, `udp://${LOCAL_IP}:${LOCAL_PORT}?listen`,
-      '-f', 'wav',
-      'pipe:1'
-    ]);
-
-    const ws = new WebSocket(OPENAI_REALTIME_URL, {
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        'OpenAI-Beta': 'realtime=v1'
-      }
-    });
-
-    ws.on('open', () => console.log('🧠 Подключено к OpenAI Realtime'));
-
-    ffmpeg.stdout.on('data', chunk => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(chunk);
-      }
-    });
-
-    ws.on('message', async (msg) => {
-      try {
-        const data = JSON.parse(msg.toString());
-        if (data?.text) {
-          console.log('🎤 Распознано:', data.text);
-
-          const reply = `Вы сказали: ${data.text}`;
-          const ttsFile = await synthesizeText(reply);
-
-          await channel.play({ media: `sound:${ttsFile}` });
+      ws.on('message', (msg) => {
+        try {
+          const data = JSON.parse(msg);
+          if (data?.type === 'response.output_text.delta') {
+            console.log('💬 OpenAI:', data.delta);
+          } else if (data?.type === 'response.completed') {
+            console.log('✅ Ответ завершён');
+          }
+        } catch (e) {
+          console.error('Ошибка парсинга OpenAI ответа:', e.message);
         }
-      } catch (err) {
-        console.error('Ошибка парсинга:', err.message);
-      }
-    });
+      });
 
-    ws.on('close', () => console.log('🔌 Соединение с OpenAI закрыто'));
+      ws.on('close', () => console.log('🔌 WebSocket закрыт'));
+      ws.on('error', (e) => console.error('❌ Ошибка WS:', e.message));
+
+      setTimeout(async () => {
+        console.log('📴 Завершение вызова');
+        await channel.hangup();
+      }, 820000);
+    } catch (err) {
+      console.error('Ошибка в обработке звонка:', err);
+      try {
+        await channel.hangup();
+      } catch {}
+    }
   });
 
-  client.start('openai-app');
+  ari.start(STASIS_APP);
 });

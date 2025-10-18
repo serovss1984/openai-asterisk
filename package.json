@@ -9,11 +9,12 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
     "ari-client": "^2.2.0",
     "axios": "^1.12.2",
     "child_process": "^1.0.2",
+    "dotenv": "^17.2.3",
     "ws": "^8.18.3"
   }
 }
